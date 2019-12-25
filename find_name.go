@@ -10,7 +10,14 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"runtime"
+	"time"
 )
+
+type GoParam struct {
+	Ss             string
+	JapaneseCharss [][]string
+}
 
 // intToString はnを客たーコードとして文字列を返します
 func intToString(n int) string {
@@ -51,46 +58,80 @@ func makeJapaneseChars() []string {
 }
 
 // innerMakeStrings はmakeStringsの内部関数で、与えられたjapaneseChars配列の文字数分の文字列を生成し、評価関数で評価する
-func innerMakeStrings(ss string, f func(string) bool, japaneseCharss ...[]string) bool {
+func innerMakeStrings(id int, jobs chan GoParam, finish chan<- bool, f func(string) bool, ss string, japaneseCharss [][]string) {
 	count := len(japaneseCharss)
-	if count <= 0 {
-		return false
-	} else {
+	if count > 0 {
 		if count == 1 {
-			fmt.Println(ss)
+			// fmt.Printf("%d: %s\n", id, ss)
 			for _, s := range japaneseCharss[0] {
 				if !f(ss + s) {
-					return false
+					fmt.Printf("%d: finish<-\n", id)
+					finish <- true
+					return
 				}
 			}
 		} else {
+			// fmt.Printf("%d: (%s)\n", id, ss)
 			js := japaneseCharss[1:]
 			for _, s := range japaneseCharss[0] {
-				r := innerMakeStrings(ss+s, f, js...)
-				if !r {
-					return false
-				}
+				jobs <- GoParam{ss + s, js}
 			}
 		}
 	}
-	return true
 }
 
-// makeStrings は3文字までの名前に対して、文字列を評価する
-func makeStrings(japaneseChars []string, f func(string) bool) bool {
-	// 1文字目
-	if !innerMakeStrings("", f, [][]string{japaneseChars}...) {
-		return false
+func worker(id int, f func(string) bool, jobs chan GoParam, finish chan<- bool, done <-chan bool) {
+OUTER:
+	for {
+		select {
+		default:
+			fmt.Printf("%d: sleeping\n", id)
+			time.Sleep(1 * time.Second)
+		case _, ok := <-done:
+			if !ok {
+				fmt.Printf("%d: done\n", id)
+				break OUTER
+			}
+		case job, ok := <-jobs:
+			if ok {
+				innerMakeStrings(id, jobs, finish, f, job.Ss, job.JapaneseCharss)
+			} else {
+				fmt.Printf("%d: break\n", id)
+				break OUTER
+			}
+		}
 	}
-	// 2文字目
-	if !innerMakeStrings("", f, [][]string{japaneseChars, japaneseChars}...) {
-		return false
+	fmt.Printf("%d: finish\n", id)
+}
+
+// processing は3文字までの名前に対して、文字列を評価する
+func processing(japaneseChars []string, f func(string) bool) {
+	numCpu := runtime.NumCPU()
+	runtime.GOMAXPROCS(numCpu)
+
+	jobs := make(chan GoParam, 65536)
+	finish := make(chan bool)
+	dones := []chan bool{}
+
+	for i := 0; i < numCpu; i++ {
+		done := make(chan bool, numCpu+1)
+		go worker(i, f, jobs, finish, done)
+		dones = append(dones, done)
 	}
-	// 3文字目
-	if !innerMakeStrings("", f, [][]string{japaneseChars, japaneseChars, japaneseChars}...) {
-		return false
+	// お仕事生成
+	// 1文字
+	jobs <- GoParam{"", [][]string{japaneseChars}}
+	// 2文字
+	jobs <- GoParam{"", [][]string{japaneseChars, japaneseChars}}
+	// 3文字
+	jobs <- GoParam{"", [][]string{japaneseChars, japaneseChars, japaneseChars}}
+
+	// 終了を待つ
+	<-finish
+	for _, done := range dones {
+		close(done)
 	}
-	return true
+	fmt.Println("0: finish")
 }
 
 // calculateHash は文字列からbase64とMD5を求めます
@@ -120,16 +161,5 @@ func process(s string) bool {
 // main はまいんちゃんです
 func main() {
 	japaneseChars := makeJapaneseChars()
-	//  makeStrings(func (s string) { fmt.Println(s) })
-	makeStrings(japaneseChars, process)
-
-	msg := "Hello, 世界"
-	encoded := base64.StdEncoding.EncodeToString([]byte(msg))
-	fmt.Println(encoded)
-	decoded, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		fmt.Println("decode error:", err)
-		return
-	}
-	fmt.Println(string(decoded))
+	processing(japaneseChars, process)
 }
