@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/md5"
 	"encoding/base64"
+	"errors"
 
 	"golang.org/x/text/width"
 
@@ -11,12 +12,41 @@ import (
 	"io"
 	"regexp"
 	"runtime"
+	"sync"
 	"time"
 )
 
-type GoParam struct {
+type Job struct {
 	Ss             string
 	JapaneseCharss [][]string
+}
+
+type Jobs struct {
+	mutex       *sync.Mutex
+	appendCount int
+	popCount    int
+	Jobs        []Job
+}
+
+func (j *Jobs) Append(job Job) {
+	j.mutex.Lock()
+	j.Jobs = append(j.Jobs, job)
+	j.appendCount++
+	j.mutex.Unlock()
+}
+
+func (j *Jobs) Pop() (Job, error) {
+	j.mutex.Lock()
+	if len(j.Jobs) <= 0 {
+		j.mutex.Unlock()
+		err := errors.New("ジョブが空です")
+		return Job{}, err
+	}
+	job := j.Jobs[0]
+	j.Jobs = j.Jobs[1:]
+	j.popCount++
+	j.mutex.Unlock()
+	return job, nil
 }
 
 // intToString はnを客たーコードとして文字列を返します
@@ -58,11 +88,11 @@ func makeJapaneseChars() []string {
 }
 
 // innerMakeStrings はmakeStringsの内部関数で、与えられたjapaneseChars配列の文字数分の文字列を生成し、評価関数で評価する
-func innerMakeStrings(id int, jobs chan GoParam, finish chan<- bool, f func(string) bool, ss string, japaneseCharss [][]string) {
+func innerMakeStrings(id int, jobs *Jobs, finish chan<- bool, f func(string) bool, ss string, japaneseCharss [][]string) {
 	count := len(japaneseCharss)
 	if count > 0 {
 		if count == 1 {
-			// fmt.Printf("%d: %s\n", id, ss)
+			fmt.Printf("%d: %s\n", id, ss)
 			for _, s := range japaneseCharss[0] {
 				if !f(ss + s) {
 					fmt.Printf("%d: finish<-\n", id)
@@ -74,29 +104,25 @@ func innerMakeStrings(id int, jobs chan GoParam, finish chan<- bool, f func(stri
 			// fmt.Printf("%d: (%s)\n", id, ss)
 			js := japaneseCharss[1:]
 			for _, s := range japaneseCharss[0] {
-				jobs <- GoParam{ss + s, js}
+				jobs.Append(Job{ss + s, js})
 			}
 		}
 	}
 }
 
-func worker(id int, f func(string) bool, jobs chan GoParam, finish chan<- bool, done <-chan bool) {
+func worker(id int, f func(string) bool, jobs *Jobs, finish chan<- bool, done <-chan bool) {
 OUTER:
 	for {
 		select {
 		default:
-			fmt.Printf("%d: sleeping\n", id)
-			time.Sleep(1 * time.Second)
-		case _, ok := <-done:
-			if !ok {
-				fmt.Printf("%d: done\n", id)
-				break OUTER
-			}
-		case job, ok := <-jobs:
-			if ok {
+			job, err := jobs.Pop()
+			if err == nil {
 				innerMakeStrings(id, jobs, finish, f, job.Ss, job.JapaneseCharss)
 			} else {
-				fmt.Printf("%d: break\n", id)
+				time.Sleep(10 * time.Millisecond)
+			}
+		case _, ok := <-done:
+			if !ok {
 				break OUTER
 			}
 		}
@@ -109,29 +135,30 @@ func processing(japaneseChars []string, f func(string) bool) {
 	numCpu := runtime.NumCPU()
 	runtime.GOMAXPROCS(numCpu)
 
-	jobs := make(chan GoParam, 65536)
-	finish := make(chan bool)
+	jobs := Jobs{new(sync.Mutex), 0, 0, []Job{}}
 	dones := []chan bool{}
+	finish := make(chan bool)
 
 	for i := 0; i < numCpu; i++ {
 		done := make(chan bool, numCpu+1)
-		go worker(i, f, jobs, finish, done)
+		go worker(i, f, &jobs, finish, done)
 		dones = append(dones, done)
 	}
 	// お仕事生成
+	id := 0
 	// 1文字
-	jobs <- GoParam{"", [][]string{japaneseChars}}
+	jobs.Append(Job{"", [][]string{japaneseChars}})
 	// 2文字
-	jobs <- GoParam{"", [][]string{japaneseChars, japaneseChars}}
+	jobs.Append(Job{"", [][]string{japaneseChars, japaneseChars}})
 	// 3文字
-	jobs <- GoParam{"", [][]string{japaneseChars, japaneseChars, japaneseChars}}
+	jobs.Append(Job{"", [][]string{japaneseChars, japaneseChars, japaneseChars}})
 
 	// 終了を待つ
 	<-finish
 	for _, done := range dones {
 		close(done)
 	}
-	fmt.Println("0: finish")
+	fmt.Printf("%d: finish, AppendCount = %d, PopCount = %d\n", id, jobs.appendCount, jobs.popCount)
 }
 
 // calculateHash は文字列からbase64とMD5を求めます
