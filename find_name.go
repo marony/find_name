@@ -49,7 +49,7 @@ func (j *Jobs) Pop() (Job, error) {
 	return job, nil
 }
 
-// intToString はnを客たーコードとして文字列を返します
+// intToString はnをキャラクターコードとして文字列を返します
 func intToString(n int) string {
 	c := rune(n)
 	return string(c)
@@ -92,7 +92,7 @@ func innerMakeStrings(id int, jobs *Jobs, finish chan<- bool, f func(string) boo
 	count := len(japaneseCharss)
 	if count > 0 {
 		if count == 1 {
-			fmt.Printf("%d: %s\n", id, ss)
+//			fmt.printf("%d: %s\n", id, ss)
 			for _, s := range japaneseCharss[0] {
 				if !f(ss + s) {
 					fmt.Printf("%d: finish<-\n", id)
@@ -103,8 +103,14 @@ func innerMakeStrings(id int, jobs *Jobs, finish chan<- bool, f func(string) boo
 		} else {
 			// fmt.Printf("%d: (%s)\n", id, ss)
 			js := japaneseCharss[1:]
-			for _, s := range japaneseCharss[0] {
-				jobs.Append(Job{ss + s, js})
+			if ss == "" {
+				for _, s := range japaneseCharss[0] {
+					jobs.Append(Job{ss + s, js})
+				}
+			} else {
+				for _, s := range japaneseCharss[0] {
+					innerMakeStrings(id, jobs, finish, f, ss + s, js)
+				}
 			}
 		}
 	}
@@ -137,7 +143,7 @@ func processing(japaneseChars []string, f func(string) bool) {
 
 	jobs := Jobs{new(sync.Mutex), 0, 0, []Job{}}
 	dones := []chan bool{}
-	finish := make(chan bool)
+	finish := make(chan bool, numCpu + 1)
 
 	for i := 0; i < numCpu; i++ {
 		done := make(chan bool, numCpu+1)
@@ -147,11 +153,11 @@ func processing(japaneseChars []string, f func(string) bool) {
 	// お仕事生成
 	id := 0
 	// 1文字
-	jobs.Append(Job{"", [][]string{japaneseChars}})
+	innerMakeStrings(id, &jobs, finish, f, "", [][]string{japaneseChars})
 	// 2文字
-	jobs.Append(Job{"", [][]string{japaneseChars, japaneseChars}})
+	innerMakeStrings(id, &jobs, finish, f, "", [][]string{japaneseChars, japaneseChars})
 	// 3文字
-	jobs.Append(Job{"", [][]string{japaneseChars, japaneseChars, japaneseChars}})
+	innerMakeStrings(id, &jobs, finish, f, "", [][]string{japaneseChars, japaneseChars, japaneseChars})
 
 	// 終了を待つ
 	<-finish
@@ -176,17 +182,20 @@ func calculateHash(s string) (string, string) {
 }
 
 // process は文字列が答えかどうかを判断します
-func process(s string) bool {
-	_, r := calculateHash(s)
-	if r == "d41d8cd98f00b204e9800998ecf8427e" {
-		fmt.Println(s)
-		return false
-	}
-	return true
-}
 
 // main はまいんちゃんです
 func main() {
+  count := 0
+  f := func (s string) bool {
+    count += 1
+    //    fmt.Printf("%d, %s\n", count, s)
+	  _, r := calculateHash(s)
+	  if r == "d41d8cd98f00b204e9800998ecf8427e" {
+		  fmt.Println(s)
+		  return false
+	  }
+    return true
+  }
 	japaneseChars := makeJapaneseChars()
-	processing(japaneseChars, process)
+  processing(japaneseChars, f)
 }
